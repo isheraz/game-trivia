@@ -151,10 +151,10 @@ class QueueService {
     }
 
     console.log('🔧 Setting up queue handlers...');
-    console.log('⚡ Message queue concurrency: 50 workers (optimized for 100+ users)');
+    console.log('⚡ Message queue concurrency: 5 workers (optimized for message ordering)');
     console.log('⚡ Game queue concurrency: 20 workers (optimized for 100+ users)');
 
-    this.messageQueue.process('send_message', 50, async (job) => {
+    this.messageQueue.process('send_message', 5, async (job) => {
       try {
         console.log('📤 Processing send_message job:', job.id);
         return await this.processMessage(job.data);
@@ -164,7 +164,7 @@ class QueueService {
       }
     });
 
-    this.messageQueue.process('send_template', 50, async (job) => {
+    this.messageQueue.process('send_template', 5, async (job) => {
       try {
         console.log('📤 Processing send_template job:', job.id);
         return await this.processTemplate(job.data);
@@ -174,7 +174,7 @@ class QueueService {
       }
     });
 
-    this.messageQueue.process('send_question', 50, async (job) => {
+    this.messageQueue.process('send_question', 5, async (job) => {
       try {
         console.log('📤 Processing send_question job:', job.id);
         return await this.processQuestion(job.data);
@@ -184,7 +184,7 @@ class QueueService {
       }
     });
 
-    this.messageQueue.process('send_elimination', 50, async (job) => {
+    this.messageQueue.process('send_elimination', 5, async (job) => {
       try {
         console.log('📤 Processing send_elimination job:', job.id);
         return await this.processElimination(job.data);
@@ -371,40 +371,64 @@ class QueueService {
     console.log(`📤 [QUEUE_SERVICE] - MessageType: ${messageType}`);
     console.log(`📤 [QUEUE_SERVICE] - QuestionIndex: ${questionIndex}`);
     
-    // Create deduplication key for critical game messages
-    if (gameId && messageType && ['game_start', 'elimination', 'late_elimination', 'timeout_elimination', 'game_end', 'emergency_end', 'question_sent', 'countdown_reminder', 'correct_answer'].includes(messageType)) {
-      // Include question index for elimination messages to prevent cross-question duplicates
-      const dedupeKey = questionIndex !== undefined ? 
-        `message_sent:${gameId}:${messageType}:${questionIndex}:${to}` :
-        `message_sent:${gameId}:${messageType}:${to}`;
-      
-      console.log(`🔑 [QUEUE_SERVICE] Deduplication key: ${dedupeKey}`);
-      
-      if (this.redis) {
-        try {
-          const alreadySent = await this.redis.get(dedupeKey);
-          if (alreadySent) {
-            console.log(`🔄 [QUEUE_SERVICE] Skipping duplicate ${messageType} message to ${to} (already sent)`);
-            return { message: 'duplicate_skipped' };
-          }
-          
-          // Mark as sent with appropriate expiration
-          const expiration = ['elimination', 'late_elimination', 'timeout_elimination'].includes(messageType) ? 60 : 
-                           messageType === 'countdown_reminder' ? 15 : 30;
-          await this.redis.setex(dedupeKey, expiration, 'sent');
-          console.log(`✅ [QUEUE_SERVICE] ${messageType} message marked as sent to ${to}`);
-        } catch (error) {
-          console.error('❌ [QUEUE_SERVICE] Redis message deduplication error:', error);
-          // Continue with sending if Redis fails
-        }
+    // CRITICAL FIX: Per-user message serialization to prevent ordering issues
+    const userLockKey = `user_message_lock:${to}`;
+    const lockAcquired = await this.acquireLock(userLockKey, 10);
+    
+    if (!lockAcquired) {
+      console.log(`⚠️ [QUEUE_SERVICE] Could not acquire user lock for ${to}, retrying...`);
+      // Wait a bit and retry
+      await new Promise(resolve => setTimeout(resolve, 100));
+      const retryLock = await this.acquireLock(userLockKey, 10);
+      if (!retryLock) {
+        console.log(`❌ [QUEUE_SERVICE] Failed to acquire user lock after retry for ${to}`);
+        return { message: 'user_lock_failed' };
       }
     }
     
-    console.log(`📤 [QUEUE_SERVICE] Sending message to WhatsApp API...`);
-    const whatsappService = require('./whatsappService');
-    const result = await whatsappService.sendTextMessage(to, message);
-    console.log(`📤 [QUEUE_SERVICE] WhatsApp API result:`, result);
-    return result;
+    try {
+      // Create deduplication key for critical game messages
+      if (gameId && messageType && ['game_start', 'elimination', 'late_elimination', 'timeout_elimination', 'game_end', 'emergency_end', 'question_sent', 'countdown_reminder', 'correct_answer'].includes(messageType)) {
+        // Include question index for elimination messages to prevent cross-question duplicates
+        const dedupeKey = questionIndex !== undefined ? 
+          `message_sent:${gameId}:${messageType}:${questionIndex}:${to}` :
+          `message_sent:${gameId}:${messageType}:${to}`;
+        
+        console.log(`🔑 [QUEUE_SERVICE] Deduplication key: ${dedupeKey}`);
+        
+        if (this.redis) {
+          try {
+            const alreadySent = await this.redis.get(dedupeKey);
+            if (alreadySent) {
+              console.log(`🔄 [QUEUE_SERVICE] Skipping duplicate ${messageType} message to ${to} (already sent)`);
+              return { message: 'duplicate_skipped' };
+            }
+            
+            // Mark as sent with appropriate expiration
+            const expiration = ['elimination', 'late_elimination', 'timeout_elimination'].includes(messageType) ? 60 : 
+                             messageType === 'countdown_reminder' ? 15 : 30;
+            await this.redis.setex(dedupeKey, expiration, 'sent');
+            console.log(`✅ [QUEUE_SERVICE] ${messageType} message marked as sent to ${to}`);
+          } catch (error) {
+            console.error('❌ [QUEUE_SERVICE] Redis message deduplication error:', error);
+            // Continue with sending if Redis fails
+          }
+        }
+      }
+      
+      console.log(`📤 [QUEUE_SERVICE] Sending message to WhatsApp API...`);
+      const whatsappService = require('./whatsappService');
+      const result = await whatsappService.sendTextMessage(to, message);
+      console.log(`📤 [QUEUE_SERVICE] WhatsApp API result:`, result);
+      
+      // Add small delay to respect Meta's rate limits and ensure message ordering
+      await new Promise(resolve => setTimeout(resolve, 200));
+      
+      return result;
+    } finally {
+      // Always release the user lock
+      await this.releaseLock(userLockKey);
+    }
   }
 
   async processTemplate(data) {

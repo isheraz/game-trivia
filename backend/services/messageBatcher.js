@@ -14,7 +14,7 @@ class MessageBatcher {
   }
 
   /**
-   * Add a message to the batch queue
+   * Add a message to the batch queue with per-user ordering
    * @param {string} to - Recipient phone number
    * @param {string} message - Message content
    * @param {string} priority - Message priority (high, normal, low)
@@ -31,18 +31,34 @@ class MessageBatcher {
         reject
       };
 
-      // Add to pending messages
-      this.pendingMessages.push(messageData);
-
-      // Sort by priority (high first)
-      this.pendingMessages.sort((a, b) => {
-        const priorityOrder = { high: 3, normal: 2, low: 1 };
-        return priorityOrder[b.priority] - priorityOrder[a.priority];
-      });
+      // CRITICAL FIX: Maintain per-user message ordering
+      // Instead of global batching, use per-user queues
+      this.addToUserQueue(to, messageData);
 
       // Check if we should process a batch
       this.checkAndProcessBatch();
     });
+  }
+
+  /**
+   * Add message to per-user queue to maintain ordering
+   * @param {string} to - Recipient phone number
+   * @param {Object} messageData - Message data
+   */
+  addToUserQueue(to, messageData) {
+    if (!this.userQueues) {
+      this.userQueues = new Map();
+    }
+
+    if (!this.userQueues.has(to)) {
+      this.userQueues.set(to, []);
+    }
+
+    // Add to user's specific queue (maintains FIFO order)
+    this.userQueues.get(to).push(messageData);
+
+    // Also add to global pending for batch processing
+    this.pendingMessages.push(messageData);
   }
 
   /**

@@ -11,7 +11,7 @@ class WhatsAppService {
     this.testPhoneNumbers = devConfig.development.testPhoneNumbers || [];
   }
 
-  // Send text message
+  // Send text message with rate limiting
   async sendTextMessage(to, text) {
     try {
       // Development mode safety check
@@ -33,6 +33,9 @@ class WhatsAppService {
         // }
       }
 
+      // CRITICAL FIX: Rate limiting to prevent Meta API throttling
+      await this.rateLimitForUser(to);
+
       const response = await this.client.post(`/${this.phoneNumberId}/messages`, {
         messaging_product: 'whatsapp',
         to: to,
@@ -45,8 +48,40 @@ class WhatsAppService {
       return response.data;
     } catch (error) {
       console.error('❌ Error sending text message:', error.response?.data || error.message);
+      
+      // Handle rate limiting errors specifically
+      if (error.response?.status === 429) {
+        console.log(`⏰ Rate limited for ${to}, waiting before retry...`);
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        // Retry once after rate limit
+        return this.sendTextMessage(to, text);
+      }
+      
       throw error;
     }
+  }
+
+  // Rate limiting per user to prevent API throttling
+  async rateLimitForUser(to) {
+    if (!this.userLastMessage) {
+      this.userLastMessage = new Map();
+    }
+
+    const lastMessageTime = this.userLastMessage.get(to);
+    const now = Date.now();
+    
+    if (lastMessageTime) {
+      const timeSinceLastMessage = now - lastMessageTime;
+      const minInterval = 500; // 500ms minimum between messages to same user
+      
+      if (timeSinceLastMessage < minInterval) {
+        const waitTime = minInterval - timeSinceLastMessage;
+        console.log(`⏰ Rate limiting: waiting ${waitTime}ms before sending to ${to}`);
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+      }
+    }
+    
+    this.userLastMessage.set(to, now);
   }
 
 

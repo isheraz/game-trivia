@@ -7,8 +7,8 @@ module.exports = {
   apps: [{
     name: 'qrush-trivia',
     script: './backend/app.js',
-    instances: 'max', // Use all CPU cores
-    exec_mode: 'cluster',
+    instances: 1, // Single instance to prevent message ordering issues
+    exec_mode: 'fork', // Use fork mode instead of cluster for message consistency
     
     // Environment variables
     env: {
