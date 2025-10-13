@@ -40,16 +40,31 @@ router.get('/', (req, res) => {
   }
 });
 
-// Message webhook
-router.post('/', async (req, res) => {
+// Message webhook - respond immediately to avoid Meta timeout
+router.post('/', (req, res) => {
+  console.log('📬 Incoming webhook at', new Date());
+  
+  // Respond immediately to avoid Meta timeout
+  res.sendStatus(200);
+  
+  // Process webhook asynchronously
+  setImmediate(async () => {
+    try {
+      await processWebhook(req.body);
+    } catch (err) {
+      console.error('❌ Webhook async error:', err);
+    }
+  });
+});
+
+// Process webhook asynchronously
+async function processWebhook(body) {
   try {
-    // Silent webhook processing - only log errors
-    
     // Log webhook to monitoring system
     try {
       const adminModule = require('./admin');
       if (adminModule.addWebhookLog) {
-        adminModule.addWebhookLog(req.body);
+        adminModule.addWebhookLog(body);
       }
     } catch (error) {
       console.error('❌ Error logging webhook:', error);
@@ -147,14 +162,14 @@ router.post('/', async (req, res) => {
       ).required()
     });
 
-    const { error } = webhookSchema.validate(req.body);
+    const { error } = webhookSchema.validate(body);
     if (error) {
       console.error('❌ Webhook validation error:', error.details);
-      return res.status(400).json({ error: 'Invalid webhook structure' });
+      return;
     }
 
     // Process each message
-    for (const entry of req.body.entry) {
+    for (const entry of body.entry) {
       for (const change of entry.changes) {
         if (change.field === 'messages') {
           const value = change.value;
@@ -175,13 +190,10 @@ router.post('/', async (req, res) => {
         }
       }
     }
-
-    res.status(200).json({ status: 'ok' });
   } catch (error) {
     console.error('❌ Webhook processing error:', error);
-    res.status(500).json({ error: 'Internal server error' });
   }
-});
+}
 
 // Process individual message
 async function processMessage(message, contact) {
