@@ -246,7 +246,8 @@ async function handleNewUser(phoneNumber, messageText, contact) {
     
     // Send welcome message via queue system (same as existing users)
     try {
-      await queueService.addMessage('send_message', {
+      console.log('📤 Attempting to queue welcome message for:', phoneNumber);
+      const result = await queueService.addMessage('send_message', {
         to: phoneNumber, // Use normalized phone number
         message: `🎉 Welcome to QRush Trivia, ${displayName}!
 
@@ -255,7 +256,7 @@ It's sudden-death: get every question right to stay in. One wrong or no answer =
 
 Reply "PLAY" to get a reminder when we start!`
       });
-      console.log('✅ Welcome message queued for new user');
+      console.log('✅ Welcome message queued for new user, result:', result);
     } catch (error) {
       console.error('❌ Error queuing welcome message:', error);
     }

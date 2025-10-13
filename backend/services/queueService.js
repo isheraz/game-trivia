@@ -304,6 +304,8 @@ class QueueService {
    * Uses Redis FIFO lock to ensure strict ordering per recipient
    */
   async addMessage(type, data, options = {}) {
+    console.log(`📤 [QUEUE_SERVICE] addMessage called: type=${type}, to=${data.to}`);
+    
     if (!this.messageQueue) {
       console.log('⚠️  Message queue not available, skipping message');
       return null;
@@ -327,10 +329,13 @@ class QueueService {
     // For batched messages use your existing batcher
     if (type === 'send_message') {
       try {
+        console.log('📤 [QUEUE_SERVICE] Using batched message for:', data.to);
         // Use your batcher when appropriate
-        return await this.addBatchedMessage(data.to, data.message, data.priority || 'normal', data);
+        const result = await this.addBatchedMessage(data.to, data.message, data.priority || 'normal', data);
+        console.log('📤 [QUEUE_SERVICE] Batched message result:', result);
+        return result;
       } catch (error) {
-        logger.error('❌ Failed to add batched message:', error.message);
+        console.error('❌ Failed to add batched message:', error.message);
         return null;
       }
     }

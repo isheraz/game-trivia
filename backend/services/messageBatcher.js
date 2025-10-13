@@ -191,30 +191,20 @@ class MessageBatcher {
   }
 
   /**
-   * Send a single message through queue service with sequence ordering
+   * Send a single message directly to WhatsApp with sequence ordering
    * @param {string} to - Recipient
    * @param {string} message - Message content
    * @param {Object} messageData - Original message data with sequence info
    */
   async sendSingleMessage(to, message, messageData = {}) {
     try {
-      // Use queue service to maintain sequence ordering
-      const queueService = require('./queueService');
+      console.log(`📤 [MESSAGE_BATCHER] Sending message to ${to}`);
       
-      // Create data object with sequence information
-      const queueData = {
-        to,
-        message,
-        _seq: messageData._seq,
-        gameId: messageData.gameId,
-        messageType: messageData.messageType,
-        questionIndex: messageData.questionIndex,
-        priority: messageData.priority || 'normal'
-      };
+      // Import WhatsApp service and send the message directly
+      const whatsappService = require('./whatsappService');
+      const result = await whatsappService.sendTextMessage(to, message);
       
-      // Add to queue with sequence ordering
-      const result = await queueService.addMessage('send_message', queueData);
-      
+      console.log(`✅ [MESSAGE_BATCHER] Message sent to ${to}, result:`, result);
       return result;
     } catch (error) {
       console.error(`❌ Failed to send message to ${to}:`, error.message);
