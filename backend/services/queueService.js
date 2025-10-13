@@ -3,6 +3,65 @@ const Redis = require('ioredis');
 const MessageBatcher = require('./messageBatcher');
 const logger = require('../utils/logger');
 
+// Configuration constants for ordered messaging
+const SEND_DELAY_MS = parseInt(process.env.SEND_DELAY_MS || '150', 10); // small delay between messages to same user
+const SEQUENCE_WAIT_POLL_MS = parseInt(process.env.SEQUENCE_WAIT_POLL_MS || '50', 10);
+const SEQUENCE_WAIT_TIMEOUT_MS = parseInt(process.env.SEQUENCE_WAIT_TIMEOUT_MS || '5000', 10);
+const MESSAGE_QUEUE_CONCURRENCY = parseInt(process.env.MESSAGE_QUEUE_CONCURRENCY || '10', 10); // lowered concurrency
+
+// helper sleep
+function sleep(ms) { return new Promise(res => setTimeout(res, ms)); }
+
+// Per-user sequence lock for ordered message delivery
+const SEQ_KEY_PREFIX = 'msg_seq_lock:';
+
+/**
+ * Enqueue ordered message with per-user FIFO lock
+ * Ensures messages to the same user are sent in strict order
+ * @param {string} to - Recipient phone number
+ * @param {Function} sendFn - Function to send the message
+ * @param {Object} redis - Redis instance
+ */
+async function enqueueOrderedMessage(to, sendFn, redis) {
+  const lockKey = `${SEQ_KEY_PREFIX}${to}`;
+
+  // Use Redis list as a lightweight FIFO lock
+  const seq = Date.now(); // unique timestamp
+  await redis.rpush(lockKey, seq);
+
+  try {
+    // Wait until this seq is at the head (efficient wait)
+    let waitCount = 0;
+    while (true) {
+      const head = await redis.lindex(lockKey, 0);
+      if (head === String(seq)) break;
+      
+      // Debug logging for lock contention
+      if (waitCount === 0) {
+        console.log(`⏳ Waiting for lock on ${to} (seq: ${seq})`);
+      }
+      waitCount++;
+      
+      // use short BLPOP on a temporary notification key
+      await redis.blpop(`${lockKey}:notify`, 0.05).catch(() => {});
+    }
+    
+    if (waitCount > 0) {
+      console.log(`✅ Lock acquired for ${to} after ${waitCount} waits`);
+    }
+
+    // 🔒 Send message only when it's your turn
+    await sendFn();
+
+  } finally {
+    // Remove your seq and free next message
+    await redis.lpop(lockKey);
+    // Notify next message in queue
+    await redis.lpush(`${lockKey}:notify`, 'next');
+    await redis.expire(`${lockKey}:notify`, 1);
+  }
+}
+
 console.log('🔧 Initializing Queue Service...');
 
 class QueueService {
@@ -111,33 +170,25 @@ class QueueService {
       console.log('⚠️  Redis not available, skipping queue initialization');
       return;
     }
-  
+
     try {
-      console.log('🔄 Initializing Bull queues...');
-      console.log('🔍 Redis URL for queues:', process.env.REDIS_URL);
-  
-      // Just pass the URL (Bull handles redis:// vs rediss:// automatically)
+      console.log('🔄 Initializing Bull queues (ordered messaging enabled)...');
       this.messageQueue = new Queue('whatsapp-messages', process.env.REDIS_URL);
       this.gameQueue = new Queue('game-timers', process.env.REDIS_URL);
-  
-      // Add error handlers for queues
+
       this.messageQueue.on('error', (error) => {
         console.error('❌ Message queue error:', error);
       });
-      
       this.gameQueue.on('error', (error) => {
         console.error('❌ Game queue error:', error);
       });
-  
+
       this.setupQueueHandlers();
       this.setupQueueEvents();
-  
-      console.log('✅ Queues initialized successfully');
-      console.log('📊 Message queue ready:', !!this.messageQueue);
-      console.log('📊 Game queue ready:', !!this.gameQueue);
+
+      console.log('✅ Queues initialized successfully (ordered messaging active)');
     } catch (error) {
       console.error('❌ Failed to initialize queues:', error.message);
-      console.error('❌ Queue initialization error details:', error);
       this.messageQueue = null;
       this.gameQueue = null;
     }
@@ -151,12 +202,12 @@ class QueueService {
     }
 
     console.log('🔧 Setting up queue handlers...');
-    console.log('⚡ Message queue concurrency: 5 workers (optimized for message ordering)');
+    console.log(`⚡ Message queue concurrency: ${MESSAGE_QUEUE_CONCURRENCY} workers (per-recipient ordering enforced)`);
     console.log('⚡ Game queue concurrency: 20 workers (optimized for 100+ users)');
 
-    this.messageQueue.process('send_message', 5, async (job) => {
+    // Process send_message with concurrency reduced - ordering handled by seq wait
+    this.messageQueue.process('send_message', MESSAGE_QUEUE_CONCURRENCY, async (job) => {
       try {
-        console.log('📤 Processing send_message job:', job.id);
         return await this.processMessage(job.data);
       } catch (error) {
         console.error('❌ Message queue processing error:', error);
@@ -164,9 +215,10 @@ class QueueService {
       }
     });
 
-    this.messageQueue.process('send_template', 5, async (job) => {
+    // Keep template/question/elimination handlers if you want them as separate job types,
+    // but ensure you include the same ordered logic if they deliver messages to players.
+    this.messageQueue.process('send_template', MESSAGE_QUEUE_CONCURRENCY, async (job) => {
       try {
-        console.log('📤 Processing send_template job:', job.id);
         return await this.processTemplate(job.data);
       } catch (error) {
         console.error('❌ Template queue processing error:', error);
@@ -174,9 +226,8 @@ class QueueService {
       }
     });
 
-    this.messageQueue.process('send_question', 5, async (job) => {
+    this.messageQueue.process('send_question', MESSAGE_QUEUE_CONCURRENCY, async (job) => {
       try {
-        console.log('📤 Processing send_question job:', job.id);
         return await this.processQuestion(job.data);
       } catch (error) {
         console.error('❌ Question queue processing error:', error);
@@ -184,9 +235,8 @@ class QueueService {
       }
     });
 
-    this.messageQueue.process('send_elimination', 5, async (job) => {
+    this.messageQueue.process('send_elimination', MESSAGE_QUEUE_CONCURRENCY, async (job) => {
       try {
-        console.log('📤 Processing send_elimination job:', job.id);
         return await this.processElimination(job.data);
       } catch (error) {
         console.error('❌ Elimination queue processing error:', error);
@@ -194,9 +244,9 @@ class QueueService {
       }
     });
 
+    // gameQueue handlers unchanged
     this.gameQueue.process('game_timer', 20, async (job) => {
       try {
-        console.log('⏰ Processing game_timer job:', job.id);
         return await this.processGameTimer(job.data);
       } catch (error) {
         console.error('❌ Game timer processing error:', error);
@@ -206,7 +256,6 @@ class QueueService {
 
     this.gameQueue.process('question_timer', 20, async (job) => {
       try {
-        console.log('❓ Processing question_timer job:', job.id);
         return await this.processQuestionTimer(job.data);
       } catch (error) {
         console.error('❌ Question timer processing error:', error);
@@ -250,44 +299,43 @@ class QueueService {
     }
   }
 
+  /**
+   * Adds message to the queue with per-user ordering
+   * Uses Redis FIFO lock to ensure strict ordering per recipient
+   */
   async addMessage(type, data, options = {}) {
-    // Silent queue operations - only log errors
-    
     if (!this.messageQueue) {
       console.log('⚠️  Message queue not available, skipping message');
-      console.log('🔍 Queue status:', {
-        messageQueue: !!this.messageQueue,
-        gameQueue: !!this.gameQueue,
-        redis: !!this.redis,
-        redisConnected: this.redisConnected
-      });
       return null;
     }
 
-    // Use batching for send_message type to handle 200+ users efficiently
-    if (type === 'send_message') {
-      // For high priority messages (like JOIN responses), send immediately
-      if (data.priority === 'high' || data.messageType === 'join_response') {
-        console.log('⚡ Sending high priority message immediately');
-        try {
-          const whatsappService = require('./whatsappService');
-          const result = await whatsappService.sendTextMessage(data.to, data.message);
-          return { success: true, result };
-        } catch (error) {
-          console.error('❌ Failed to send immediate message:', error.message);
-          return null;
-        }
-      }
-      
-      // For normal messages, use batching
+    // For high-priority immediate sends (like JOIN responses) keep immediate path
+    if (type === 'send_message' && (data.priority === 'high' || data.messageType === 'join_response')) {
       try {
-        return await this.addBatchedMessage(data.to, data.message, data.priority || 'normal');
+        console.log('⚡ Sending high priority message immediately (bypass queue)');
+        const whatsappService = require('./whatsappService');
+        const result = await whatsappService.sendTextMessage(data.to, data.message);
+        // small delay to help ordering on provider side
+        await sleep(SEND_DELAY_MS);
+        return { success: true, result };
+      } catch (error) {
+        console.error('❌ Failed to send immediate message:', error.message);
+        return null;
+      }
+    }
+
+    // For batched messages use your existing batcher
+    if (type === 'send_message') {
+      try {
+        // Use your batcher when appropriate
+        return await this.addBatchedMessage(data.to, data.message, data.priority || 'normal', data);
       } catch (error) {
         logger.error('❌ Failed to add batched message:', error.message);
         return null;
       }
     }
 
+    // For other job types use existing flow
     try {
       const job = await this.messageQueue.add(type, data, {
         attempts: 3,
@@ -297,12 +345,7 @@ class QueueService {
         ...options
       });
       console.log(`📤 Added message job ${job.id} to queue`);
-      
-      // Track job if it's game-related
-      if (data.gameId) {
-        this.trackJob(data.gameId, job.id, type);
-      }
-      
+      if (data.gameId) this.trackJob(data.gameId, job.id, type);
       return job;
     } catch (error) {
       console.error('❌ Failed to add message to queue:', error.message);
@@ -315,11 +358,12 @@ class QueueService {
    * @param {string} to - Recipient phone number
    * @param {string} message - Message content
    * @param {string} priority - Message priority (high, normal, low)
+   * @param {Object} data - Additional data including sequence number
    * @returns {Promise} - Resolves when message is processed
    */
-  async addBatchedMessage(to, message, priority = 'normal') {
+  async addBatchedMessage(to, message, priority = 'normal', data = {}) {
     try {
-      return await this.messageBatcher.addMessage(to, message, priority);
+      return await this.messageBatcher.addMessage(to, message, priority, data);
     } catch (error) {
       console.error('❌ Failed to add batched message:', error.message);
       throw error;
@@ -361,73 +405,53 @@ class QueueService {
     }
   }
 
+  /**
+   * Process message with per-user FIFO lock to ensure strict ordering
+   * Uses Redis list-based sequence lock to prevent parallel processing for same user
+   */
   async processMessage(data) {
     const { to, message, gameId, messageType, questionIndex } = data;
-    
-    console.log(`📤 [QUEUE_SERVICE] Processing message:`);
-    console.log(`📤 [QUEUE_SERVICE] - To: ${to}`);
-    console.log(`📤 [QUEUE_SERVICE] - Message: "${message}"`);
-    console.log(`📤 [QUEUE_SERVICE] - GameId: ${gameId}`);
-    console.log(`📤 [QUEUE_SERVICE] - MessageType: ${messageType}`);
-    console.log(`📤 [QUEUE_SERVICE] - QuestionIndex: ${questionIndex}`);
-    
-    // CRITICAL FIX: Per-user message serialization to prevent ordering issues
-    const userLockKey = `user_message_lock:${to}`;
-    const lockAcquired = await this.acquireLock(userLockKey, 10);
-    
-    if (!lockAcquired) {
-      console.log(`⚠️ [QUEUE_SERVICE] Could not acquire user lock for ${to}, retrying...`);
-      // Wait a bit and retry
-      await new Promise(resolve => setTimeout(resolve, 100));
-      const retryLock = await this.acquireLock(userLockKey, 10);
-      if (!retryLock) {
-        console.log(`❌ [QUEUE_SERVICE] Failed to acquire user lock after retry for ${to}`);
-        return { message: 'user_lock_failed' };
+
+    console.log(`📤 [QUEUE_SERVICE] Processing message -> to: ${to}, type: ${messageType}`);
+
+    // Deduplication checks (keep your existing logic)
+    if (gameId && messageType && ['game_start', 'elimination', 'late_elimination', 'timeout_elimination', 'game_end', 'emergency_end', 'question_sent', 'countdown_reminder', 'correct_answer'].includes(messageType)) {
+      const dedupeKey = questionIndex !== undefined ?
+        `message_sent:${gameId}:${messageType}:${questionIndex}:${to}` :
+        `message_sent:${gameId}:${messageType}:${to}`;
+      try {
+        const alreadySent = this.redis ? await this.redis.get(dedupeKey) : null;
+        if (alreadySent) {
+          console.log(`🔄 [QUEUE_SERVICE] Skipping duplicate ${messageType} message to ${to} (already sent)`);
+          return { message: 'duplicate_skipped' };
+        }
+        const expiration = ['elimination', 'late_elimination', 'timeout_elimination'].includes(messageType) ? 60 : (messageType === 'countdown_reminder' ? 15 : 30);
+        if (this.redis) await this.redis.setex(dedupeKey, expiration, 'sent');
+      } catch (error) {
+        console.error('❌ [QUEUE_SERVICE] Redis deduplication error:', error);
       }
     }
-    
-    try {
-      // Create deduplication key for critical game messages
-      if (gameId && messageType && ['game_start', 'elimination', 'late_elimination', 'timeout_elimination', 'game_end', 'emergency_end', 'question_sent', 'countdown_reminder', 'correct_answer'].includes(messageType)) {
-        // Include question index for elimination messages to prevent cross-question duplicates
-        const dedupeKey = questionIndex !== undefined ? 
-          `message_sent:${gameId}:${messageType}:${questionIndex}:${to}` :
-          `message_sent:${gameId}:${messageType}:${to}`;
-        
-        console.log(`🔑 [QUEUE_SERVICE] Deduplication key: ${dedupeKey}`);
-        
-        if (this.redis) {
-          try {
-            const alreadySent = await this.redis.get(dedupeKey);
-            if (alreadySent) {
-              console.log(`🔄 [QUEUE_SERVICE] Skipping duplicate ${messageType} message to ${to} (already sent)`);
-              return { message: 'duplicate_skipped' };
-            }
-            
-            // Mark as sent with appropriate expiration
-            const expiration = ['elimination', 'late_elimination', 'timeout_elimination'].includes(messageType) ? 60 : 
-                             messageType === 'countdown_reminder' ? 15 : 30;
-            await this.redis.setex(dedupeKey, expiration, 'sent');
-            console.log(`✅ [QUEUE_SERVICE] ${messageType} message marked as sent to ${to}`);
-          } catch (error) {
-            console.error('❌ [QUEUE_SERVICE] Redis message deduplication error:', error);
-            // Continue with sending if Redis fails
-          }
-        }
-      }
-      
-      console.log(`📤 [QUEUE_SERVICE] Sending message to WhatsApp API...`);
+
+    // Use per-user sequence lock to ensure strict ordering
+    if (this.redis) {
+      return await enqueueOrderedMessage(to, async () => {
+        console.log(`📤 [QUEUE_SERVICE] Sending message to WhatsApp API -> to: ${to}`);
+        const whatsappService = require('./whatsappService');
+        const result = await whatsappService.sendTextMessage(to, message);
+        console.log(`📤 [QUEUE_SERVICE] WhatsApp API result for ${to}:`, result);
+
+        // slight delay to help Meta maintain order
+        await sleep(SEND_DELAY_MS);
+
+        return result;
+      }, this.redis);
+    } else {
+      // Fallback if Redis not available
+      console.log(`📤 [QUEUE_SERVICE] Sending message without ordering (Redis unavailable) -> to: ${to}`);
       const whatsappService = require('./whatsappService');
       const result = await whatsappService.sendTextMessage(to, message);
-      console.log(`📤 [QUEUE_SERVICE] WhatsApp API result:`, result);
-      
-      // Add small delay to respect Meta's rate limits and ensure message ordering
-      await new Promise(resolve => setTimeout(resolve, 200));
-      
+      await sleep(SEND_DELAY_MS);
       return result;
-    } finally {
-      // Always release the user lock
-      await this.releaseLock(userLockKey);
     }
   }
 
@@ -536,6 +560,48 @@ class QueueService {
         messageQueue: { available: false, error: error.message },
         gameQueue: { available: false, error: error.message }
       };
+    }
+  }
+
+  /**
+   * Get lock contention metrics for admin monitoring
+   * Shows how many users are currently queued for message ordering
+   */
+  async getLockContentionMetrics() {
+    if (!this.redis) {
+      return { error: 'Redis not available' };
+    }
+
+    try {
+      const pattern = `${SEQ_KEY_PREFIX}*`;
+      const keys = await this.safeRedisScan(pattern);
+      
+      const metrics = {
+        totalUsersWithLocks: keys.length,
+        usersWithQueues: [],
+        totalQueuedMessages: 0
+      };
+
+      // Get details for each user with active locks
+      for (const key of keys) {
+        const phoneNumber = key.replace(SEQ_KEY_PREFIX, '');
+        const queueLength = await this.redis.llen(key);
+        
+        if (queueLength > 0) {
+          metrics.usersWithQueues.push({
+            phoneNumber,
+            queueLength,
+            // Get first message timestamp for age calculation
+            firstMessageAge: await this.redis.lindex(key, 0)
+          });
+          metrics.totalQueuedMessages += queueLength;
+        }
+      }
+
+      return metrics;
+    } catch (error) {
+      console.error('❌ Failed to get lock contention metrics:', error.message);
+      return { error: error.message };
     }
   }
 

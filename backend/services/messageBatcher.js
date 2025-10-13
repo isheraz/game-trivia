@@ -18,9 +18,10 @@ class MessageBatcher {
    * @param {string} to - Recipient phone number
    * @param {string} message - Message content
    * @param {string} priority - Message priority (high, normal, low)
+   * @param {Object} data - Additional data including sequence number
    * @returns {Promise} - Resolves when message is processed
    */
-  async addMessage(to, message, priority = 'normal') {
+  async addMessage(to, message, priority = 'normal', data = {}) {
     return new Promise((resolve, reject) => {
       const messageData = {
         to,
@@ -28,7 +29,11 @@ class MessageBatcher {
         priority,
         timestamp: Date.now(),
         resolve,
-        reject
+        reject,
+        _seq: data._seq, // Pass through sequence number for ordering
+        gameId: data.gameId,
+        messageType: data.messageType,
+        questionIndex: data.questionIndex
       };
 
       // CRITICAL FIX: Maintain per-user message ordering
@@ -155,15 +160,16 @@ class MessageBatcher {
    */
   async sendBatchedMessages(recipient, messages) {
     try {
-      // If only one message, send it directly
+      // If only one message, send it directly with sequence data
       if (messages.length === 1) {
-        await this.sendSingleMessage(recipient, messages[0].message);
+        await this.sendSingleMessage(recipient, messages[0].message, messages[0]);
         return;
       }
 
       // Combine multiple messages into one
       const combinedMessage = this.combineMessages(messages);
-      await this.sendSingleMessage(recipient, combinedMessage);
+      // Use the first message's sequence data for the combined message
+      await this.sendSingleMessage(recipient, combinedMessage, messages[0]);
 
     } catch (error) {
       console.error(`❌ Error sending batched messages to ${recipient}:`, error);
@@ -185,15 +191,29 @@ class MessageBatcher {
   }
 
   /**
-   * Send a single message (placeholder - should integrate with WhatsApp service)
+   * Send a single message through queue service with sequence ordering
    * @param {string} to - Recipient
    * @param {string} message - Message content
+   * @param {Object} messageData - Original message data with sequence info
    */
-  async sendSingleMessage(to, message) {
+  async sendSingleMessage(to, message, messageData = {}) {
     try {
-      // Import WhatsApp service and send the message
-      const whatsappService = require('./whatsappService');
-      const result = await whatsappService.sendTextMessage(to, message);
+      // Use queue service to maintain sequence ordering
+      const queueService = require('./queueService');
+      
+      // Create data object with sequence information
+      const queueData = {
+        to,
+        message,
+        _seq: messageData._seq,
+        gameId: messageData.gameId,
+        messageType: messageData.messageType,
+        questionIndex: messageData.questionIndex,
+        priority: messageData.priority || 'normal'
+      };
+      
+      // Add to queue with sequence ordering
+      const result = await queueService.addMessage('send_message', queueData);
       
       return result;
     } catch (error) {
