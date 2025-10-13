@@ -45,60 +45,60 @@ class NotificationService {
   }
 
   // Send 30-minute reminder
-  async sendThirtyMinuteReminder(gameId) {
-    try {
-      const game = await Game.findByPk(gameId);
-      const players = await GamePlayer.findAll({
-        where: { game_id: gameId },
-        include: [{ model: User, as: 'user' }]
-      });
+//   async sendThirtyMinuteReminder(gameId) {
+//     try {
+//       const game = await Game.findByPk(gameId);
+//       const players = await GamePlayer.findAll({
+//         where: { game_id: gameId },
+//         include: [{ model: User, as: 'user' }]
+//       });
 
-      for (const player of players) {
-        await queueService.addMessage('send_message', {
-          to: player.user.whatsapp_number,
-          message: `⏰ QRush Trivia Reminder!
+//       for (const player of players) {
+//         await queueService.addMessage('send_message', {
+//           to: player.user.whatsapp_number,
+//           message: `⏰ QRush Trivia Reminder!
 
-Game starts in 30 minutes!
+// Game starts in 30 minutes!
 
-💰 Prize pool: $${game.prize_pool}
-⏰ Start time: ${new Date(game.start_time).toLocaleString()} EST
+// 💰 Prize pool: $${game.prize_pool}
+// ⏰ Start time: ${new Date(game.start_time).toLocaleString()} EST
 
-Get ready for sudden-death questions!`
-        });
-      }
+// Get ready for sudden-death questions!`
+//         });
+//       }
 
-      console.log(`📱 Sent 30-minute reminder to ${players.length} players for game ${gameId}`);
+//       console.log(`📱 Sent 30-minute reminder to ${players.length} players for game ${gameId}`);
 
-    } catch (error) {
-      console.error('❌ Error sending 30-minute reminder:', error);
-    }
-  }
+//     } catch (error) {
+//       console.error('❌ Error sending 30-minute reminder:', error);
+//     }
+//   }
 
   // Send 5-minute reminder
-  async sendFiveMinuteReminder(gameId) {
-    try {
-      const game = await Game.findByPk(gameId);
-      const players = await GamePlayer.findAll({
-        where: { game_id: gameId },
-        include: [{ model: User, as: 'user' }]
-      });
+//   async sendFiveMinuteReminder(gameId) {
+//     try {
+//       const game = await Game.findByPk(gameId);
+//       const players = await GamePlayer.findAll({
+//         where: { game_id: gameId },
+//         include: [{ model: User, as: 'user' }]
+//       });
 
-      for (const player of players) {
-        await queueService.addMessage('send_message', {
-          to: player.user.whatsapp_number,
-          message: `💰 Prize pool: $${game.prize_pool}
-⏰ Start time: ${new Date(game.start_time).toLocaleString()} EST
+//       for (const player of players) {
+//         await queueService.addMessage('send_message', {
+//           to: player.user.whatsapp_number,
+//           message: `💰 Prize pool: $${game.prize_pool}
+// ⏰ Start time: ${new Date(game.start_time).toLocaleString()} EST
 
-We will send you a reminder when the game starts.`
-        });
-      }
+// We will send you a reminder when the game starts.`
+//         });
+//       }
 
-      console.log(`📱 Sent 5-minute reminder to ${players.length} players for game ${gameId}`);
+//       console.log(`📱 Sent 5-minute reminder to ${players.length} players for game ${gameId}`);
 
-    } catch (error) {
-      console.error('❌ Error sending 5-minute reminder:', error);
-    }
-  }
+//     } catch (error) {
+//       console.error('❌ Error sending 5-minute reminder:', error);
+//     }
+//   }
 
   // Send game announcement to all users
   async sendGameAnnouncement(gameId) {

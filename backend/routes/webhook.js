@@ -362,37 +362,37 @@ Reply "PLAY" to get a reminder when we start!`
 }
 
 // Handle nickname registration (legacy - no longer used)
-async function handleNicknameRegistration(user, nickname) {
-  try {
-    // Clear registration session and continue with normal flow
-    await queueService.deleteSession(user.id);
+// async function handleNicknameRegistration(user, nickname) {
+//   try {
+//     // Clear registration session and continue with normal flow
+//     await queueService.deleteSession(user.id);
     
-    // Send welcome message
-    const nextGameTime = await getNextGameTime();
-    const prizePool = process.env.DEFAULT_PRIZE_POOL || 100;
+//     // Send welcome message
+//     const nextGameTime = await getNextGameTime();
+//     const prizePool = process.env.DEFAULT_PRIZE_POOL || 100;
     
-    // Send welcome message via queue system
-    try {
-      await queueService.addMessage('send_message', {
-        to: user.whatsapp_number, // Use stored phone number
-        message: `🎉 Welcome to QRush Trivia, ${user.nickname}!
+//     // Send welcome message via queue system
+//     try {
+//       await queueService.addMessage('send_message', {
+//         to: user.whatsapp_number, // Use stored phone number
+//         message: `🎉 Welcome to QRush Trivia, ${user.nickname}!
 
-It's sudden-death: get every question right to stay in. One wrong or no answer = you're out.
+// It's sudden-death: get every question right to stay in. One wrong or no answer = you're out.
 
 
-⏰ Next game: ${nextGameTime}
+// ⏰ Next game: ${nextGameTime}
 
-Reply "PLAY" to get a reminder when we start!`
-      });
-      console.log('✅ Welcome message queued from legacy function');
-    } catch (error) {
-      console.error('❌ Error queuing welcome message:', error);
-    }
+// Reply "PLAY" to get a reminder when we start!`
+//       });
+//       console.log('✅ Welcome message queued from legacy function');
+//     } catch (error) {
+//       console.error('❌ Error queuing welcome message:', error);
+//     }
 
-  } catch (error) {
-    console.error('❌ Error handling nickname registration:', error);
-  }
-}
+//   } catch (error) {
+//     console.error('❌ Error handling nickname registration:', error);
+//   }
+// }
 
 // Handle PLAY command
 async function handlePlayCommand(user, wa_id) {
