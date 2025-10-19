@@ -118,6 +118,37 @@ app.get('/health', (req, res) => {
   });
 });
 
+// Readiness endpoint - checks DB and queue/redis connectivity
+app.get('/ready', async (req, res) => {
+  const checks = {
+    db: false,
+    redis: false
+  };
+
+  // DB check (fast ping)
+  try {
+    await testConnection();
+    checks.db = true;
+  } catch (err) {
+    checks.db = false;
+  }
+
+  // Redis/queue check (use queueService.testConnection if available)
+  try {
+    if (queueService && typeof queueService.testConnection === 'function') {
+      const ok = await queueService.testConnection();
+      checks.redis = !!ok;
+    } else {
+      checks.redis = true; // assume ok if no queueService
+    }
+  } catch (err) {
+    checks.redis = false;
+  }
+
+  const ready = checks.db && checks.redis;
+  res.status(ready ? 200 : 503).json({ ready, checks, timestamp: new Date().toISOString() });
+});
+
 // Performance monitoring endpoint
 app.get('/performance', (req, res) => {
   const summary = performanceMonitor.getSummary();

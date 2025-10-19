@@ -856,7 +856,7 @@ Stick around to watch the finish! Reply "PLAY" for the next game.`,
   // Wait for queue processing to complete with intelligent timeout
   async waitForQueueCompletion(gameId, questionNumber, expectedCount) {
     const maxWaitTime = 10000; // 10 seconds max wait
-    const checkInterval = 500; // Check every 500ms
+        let checkInterval = 200; // start at 200ms
     const startTime = Date.now();
     
     console.log(`⏰ Waiting for ${expectedCount} questions to be processed...`);
@@ -870,9 +870,10 @@ Stick around to watch the finish! Reply "PLAY" for the next game.`,
         console.log(`✅ All ${expectedCount} questions processed successfully`);
         return;
       }
-      
-      // Wait before next check
-      await new Promise(resolve => setTimeout(resolve, checkInterval));
+          
+          // Wait before next check using exponential backoff (cap at 1000ms)
+          await new Promise(resolve => setTimeout(resolve, checkInterval));
+          checkInterval = Math.min(1000, Math.floor(checkInterval * 1.8));
     }
     
     console.log(`⚠️ Queue processing timeout - proceeding with timer (${expectedCount} questions expected)`);
