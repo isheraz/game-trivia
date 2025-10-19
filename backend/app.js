@@ -13,6 +13,8 @@ const isProduction = process.env.NODE_ENV === 'production';
 
 const app = express();
 const PORT = process.env.PORT || 3002;
+// Server instance (set when app.listen is called) - used for graceful shutdown
+let server = null;
 
 // Import database and models
 const { sequelize, testConnection } = require('./config/database');
@@ -173,8 +175,8 @@ async function initializeApp() {
       console.log('⚠️  Continuing without restoring active games');
     }
     
-    // Start server
-    app.listen(PORT, () => {
+    // Start server and capture instance so we can close it on shutdown
+    server = app.listen(PORT, () => {
       console.log(`🚀 QRush Trivia server running on port ${PORT}`);
       console.log(`📱 Environment: ${process.env.NODE_ENV}`);
       console.log(`🔗 Health check: http://localhost:${PORT}/health`);
@@ -203,19 +205,36 @@ process.on('SIGINT', async () => {
 async function gracefulShutdown() {
   try {
     console.log('🧹 Cleaning up resources...');
-    
+    // Stop accepting new connections and wait for current requests to finish
+    if (server) {
+      console.log('⏳ Closing HTTP server and draining connections...');
+      await new Promise((resolve) => {
+        // If server.close doesn't call back in 10s, continue cleanup
+        const timeout = setTimeout(() => {
+          console.warn('⚠️ server.close() timed out after 10s, continuing shutdown');
+          resolve();
+        }, 10000);
+
+        server.close(() => {
+          clearTimeout(timeout);
+          console.log('🔒 HTTP server closed');
+          resolve();
+        });
+      });
+    }
+
     // Cleanup worker threads
-    workerManager.cleanup();
-    
-    // Cleanup game service
+    await workerManager.cleanup();
+
+    // Cleanup game service (timers)
     gameService.cleanupAllTimers();
-    
+
     // Cleanup queue service
     await queueService.cleanup();
-    
+
     // Close database connection
     await sequelize.close();
-    
+
     console.log('✅ Graceful shutdown completed');
     process.exit(0);
   } catch (error) {

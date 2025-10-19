@@ -1,276 +1,168 @@
 /**
- * Worker Manager Service
- * Manages worker threads for CPU-intensive operations
- * Provides a clean interface for main thread to communicate with workers
+ * Worker Manager - simple reusable worker pool
+ * Replaces spawn-per-task approach with a small pool per worker type.
+ * Provides methods: processAnswers, processGameState, processMessageBatch, formatMessage, calculatePrizeDistribution, cleanup
  */
 
 const { Worker } = require('worker_threads');
 const path = require('path');
 
-class WorkerManager {
-  constructor() {
-    this.workers = new Map();
-    this.workerPromises = new Map();
-    this.workerCounter = 0;
-    
-    console.log('✅ Worker Manager initialized');
+class WorkerPool {
+  constructor(workerType, poolSize = 2) {
+    this.workerType = workerType;
+    this.poolSize = poolSize;
+    this.workers = [];
+    this.idle = [];
+    this.queue = [];
+    this.nextWorkerId = 0;
+
+    for (let i = 0; i < poolSize; i++) {
+      this._createWorker();
+    }
   }
 
-  /**
-   * Create a new worker thread
-   * @param {string} workerType - Type of worker (answer-processor, game-state-processor, message-processor)
-   * @returns {Worker} Worker instance
-   */
-  createWorker(workerType) {
-    const workerPath = path.join(__dirname, '..', 'workers', `${workerType}.js`);
+  _createWorker() {
+    const workerPath = path.join(__dirname, '..', 'workers', `${this.workerType}.js`);
     const worker = new Worker(workerPath);
-    
-    const workerId = `worker_${workerType}_${++this.workerCounter}`;
-    this.workers.set(workerId, worker);
-    
-    // Handle worker messages
-    worker.on('message', (result) => {
-      const promiseId = `${workerId}_${Date.now()}`;
-      if (this.workerPromises.has(promiseId)) {
-        const { resolve, reject } = this.workerPromises.get(promiseId);
-        this.workerPromises.delete(promiseId);
-        
-        if (result.success) {
-          resolve(result.result);
-        } else {
-          reject(new Error(result.error.message));
-        }
-      }
+    const id = `${this.workerType}_${++this.nextWorkerId}`;
+
+    const entry = { id, worker, busy: false };
+    this.workers.push(entry);
+    this.idle.push(entry);
+
+    // Ensure worker errors are handled and worker is replaced
+    worker.on('error', (err) => {
+      console.error(`Worker ${id} error:`, err);
+      this._removeWorker(id);
+      this._createWorker();
     });
-    
-    // Handle worker errors
-    worker.on('error', (error) => {
-      console.error(`Worker ${workerId} error:`, error);
-      this.cleanupWorker(workerId);
-    });
-    
-    // Handle worker exit
+
     worker.on('exit', (code) => {
-      if (code !== 0) {
-        console.error(`Worker ${workerId} exited with code ${code}`);
-      }
-      this.cleanupWorker(workerId);
+      if (code !== 0) console.error(`Worker ${id} exited with code ${code}`);
+      this._removeWorker(id);
+      // Replace worker to keep pool size
+      this._createWorker();
     });
-    
-    console.log(`✅ Created worker: ${workerId}`);
-    return { workerId, worker };
   }
 
-  /**
-   * Send message to worker and wait for response
-   * @param {string} workerId - Worker ID
-   * @param {string} type - Message type
-   * @param {Object} data - Message data
-   * @returns {Promise} Worker response
-   */
-  async sendMessage(workerId, type, data) {
-    const worker = this.workers.get(workerId);
-    if (!worker) {
-      throw new Error(`Worker ${workerId} not found`);
-    }
-    
+  _removeWorker(id) {
+    this.workers = this.workers.filter(w => w.id !== id);
+    this.idle = this.idle.filter(w => w.id !== id);
+  }
+
+  async runTask(message) {
     return new Promise((resolve, reject) => {
-      const promiseId = `${workerId}_${Date.now()}`;
-      this.workerPromises.set(promiseId, { resolve, reject });
-      
-      // Set timeout for worker response
-      const timeout = setTimeout(() => {
-        this.workerPromises.delete(promiseId);
-        reject(new Error(`Worker ${workerId} timeout`));
-      }, 30000); // 30 second timeout
-      
-      // Override resolve/reject to clear timeout
-      const originalResolve = resolve;
-      const originalReject = reject;
-      
-      this.workerPromises.set(promiseId, {
-        resolve: (result) => {
-          clearTimeout(timeout);
-          originalResolve(result);
-        },
-        reject: (error) => {
-          clearTimeout(timeout);
-          originalReject(error);
-        }
-      });
-      
-      worker.postMessage({ type, data });
+      const task = { message, resolve, reject };
+      const workerEntry = this.idle.shift();
+      if (workerEntry) {
+        this._runOnWorker(workerEntry, task);
+      } else {
+        // enqueue
+        this.queue.push(task);
+      }
     });
   }
 
-  /**
-   * Process answers using worker thread
-   * @param {string} gameId - Game ID
-   * @param {number} questionIndex - Question index
-   * @param {Object} answers - User answers
-   * @param {string} correctAnswer - Correct answer
-   * @param {number} timeLimit - Time limit in milliseconds
-   * @returns {Promise<Object>} Evaluation results
-   */
-  async processAnswers(gameId, questionIndex, answers, correctAnswer, timeLimit = 10000) {
-    const { workerId } = this.createWorker('answer-processor');
-    
-    try {
-      const result = await this.sendMessage(workerId, 'process_answers', {
-        gameId,
-        questionIndex,
-        answers,
-        correctAnswer,
-        timeLimit
-      });
-      
-      return result;
-    } finally {
-      this.cleanupWorker(workerId);
-    }
-  }
-
-  /**
-   * Process game state using worker thread
-   * @param {Object} gameState - Game state
-   * @param {Object} answerResults - Answer results
-   * @returns {Promise<Object>} Updated game state
-   */
-  async processGameState(gameState, answerResults) {
-    const { workerId } = this.createWorker('game-state-processor');
-    
-    try {
-      const result = await this.sendMessage(workerId, 'process_game_state', {
-        gameState,
-        answerResults
-      });
-      
-      return result;
-    } finally {
-      this.cleanupWorker(workerId);
-    }
-  }
-
-  /**
-   * Validate game state using worker thread
-   * @param {Object} gameState - Game state to validate
-   * @returns {Promise<Object>} Validation results
-   */
-  async validateGameState(gameState) {
-    const { workerId } = this.createWorker('game-state-processor');
-    
-    try {
-      const result = await this.sendMessage(workerId, 'validate_game_state', {
-        gameState
-      });
-      
-      return result;
-    } finally {
-      this.cleanupWorker(workerId);
-    }
-  }
-
-  /**
-   * Process message batch using worker thread
-   * @param {Array} messages - Array of messages
-   * @returns {Promise<Object>} Processed message batches
-   */
-  async processMessageBatch(messages) {
-    const { workerId } = this.createWorker('message-processor');
-    
-    try {
-      const result = await this.sendMessage(workerId, 'process_message_batch', {
-        messages
-      });
-      
-      return result;
-    } finally {
-      this.cleanupWorker(workerId);
-    }
-  }
-
-  /**
-   * Format message using worker thread
-   * @param {Object} message - Message to format
-   * @returns {Promise<Object>} Formatted message
-   */
-  async formatMessage(message) {
-    const { workerId } = this.createWorker('message-processor');
-    
-    try {
-      const result = await this.sendMessage(workerId, 'format_message', {
-        message
-      });
-      
-      return result;
-    } finally {
-      this.cleanupWorker(workerId);
-    }
-  }
-
-  /**
-   * Calculate prize distribution using worker thread
-   * @param {Array} winners - Array of winner user IDs
-   * @param {number} totalPrize - Total prize pool
-   * @returns {Promise<Object>} Prize distribution
-   */
-  async calculatePrizeDistribution(winners, totalPrize) {
-    const { workerId } = this.createWorker('answer-processor');
-    
-    try {
-      const result = await this.sendMessage(workerId, 'calculate_prizes', {
-        winners,
-        totalPrize
-      });
-      
-      return result;
-    } finally {
-      this.cleanupWorker(workerId);
-    }
-  }
-
-  /**
-   * Cleanup worker thread
-   * @param {string} workerId - Worker ID to cleanup
-   */
-  cleanupWorker(workerId) {
-    const worker = this.workers.get(workerId);
-    if (worker) {
-      worker.terminate();
-      this.workers.delete(workerId);
-      console.log(`🧹 Cleaned up worker: ${workerId}`);
-    }
-  }
-
-  /**
-   * Get worker statistics
-   * @returns {Object} Worker statistics
-   */
-  getStats() {
-    return {
-      activeWorkers: this.workers.size,
-      pendingPromises: this.workerPromises.size,
-      workerTypes: Array.from(this.workers.keys())
+  _runOnWorker(entry, task) {
+    entry.busy = true;
+    const { worker } = entry;
+    const onMessage = (result) => {
+      cleanup();
+      if (result && result.success) task.resolve(result.result);
+      else task.reject(result && result.error ? new Error(result.error.message) : new Error('Worker error'));
     };
+    const onError = (err) => {
+      cleanup();
+      task.reject(err);
+    };
+    const onExit = (code) => {
+      cleanup();
+      if (code !== 0) task.reject(new Error(`Worker exited with code ${code}`));
+    };
+
+    const cleanup = () => {
+      worker.off('message', onMessage);
+      worker.off('error', onError);
+      worker.off('exit', onExit);
+      entry.busy = false;
+      // return to idle list
+      this.idle.push(entry);
+      // process next queued task if any
+      const next = this.queue.shift();
+      if (next) {
+        const e = this.idle.shift();
+        if (e) this._runOnWorker(e, next);
+        else this.queue.unshift(next); // requeue
+      }
+    };
+
+    worker.once('message', onMessage);
+    worker.once('error', onError);
+    worker.once('exit', onExit);
+
+    try {
+      worker.postMessage(task.message);
+    } catch (err) {
+      cleanup();
+      task.reject(err);
+    }
   }
 
-  /**
-   * Cleanup all workers
-   */
-  cleanup() {
-    console.log('🧹 Cleaning up all workers...');
-    
-    for (const [workerId, worker] of this.workers) {
-      worker.terminate();
-    }
-    
-    this.workers.clear();
-    this.workerPromises.clear();
-    
-    console.log('✅ All workers cleaned up');
+  // Terminate all workers
+  async destroy() {
+    const promises = this.workers.map(e => e.worker.terminate().catch(() => {}));
+    await Promise.all(promises);
+    this.workers = [];
+    this.idle = [];
+    this.queue = [];
   }
 }
 
-// Export singleton instance
-const workerManager = new WorkerManager();
-module.exports = workerManager;
+class WorkerManager {
+  constructor() {
+    // pool sizes can be tuned via env vars
+    this.pools = {
+      'answer-processor': new WorkerPool('answer-processor', parseInt(process.env.ANSWER_WORKER_POOL || '2', 10)),
+      'message-processor': new WorkerPool('message-processor', parseInt(process.env.MESSAGE_WORKER_POOL || '1', 10)),
+      'game-state-processor': new WorkerPool('game-state-processor', parseInt(process.env.GAMESTATE_WORKER_POOL || '1', 10))
+    };
+    console.log('\u2705 Worker Manager pool initialized');
+  }
+
+  async processAnswers(gameId, questionIndex, answers, correctAnswer, timeLimit = 10000) {
+    const message = { type: 'process_answers', data: { gameId, questionIndex, answers, correctAnswer, timeLimit } };
+    return this.pools['answer-processor'].runTask(message);
+  }
+
+  async processGameState(gameState, answerResults) {
+    const message = { type: 'process_game_state', data: { gameState, answerResults } };
+    return this.pools['game-state-processor'].runTask(message);
+  }
+
+  async processMessageBatch(messages) {
+    const message = { type: 'process_message_batch', data: { messages } };
+    return this.pools['message-processor'].runTask(message);
+  }
+
+  async formatMessage(messageObj) {
+    const message = { type: 'format_message', data: { message: messageObj } };
+    return this.pools['message-processor'].runTask(message);
+  }
+
+  async calculatePrizeDistribution(winners, totalPrize) {
+    const message = { type: 'calculate_prizes', data: { winners, totalPrize } };
+    return this.pools['answer-processor'].runTask(message);
+  }
+
+  getStats() {
+    return Object.fromEntries(Object.entries(this.pools).map(([k, p]) => [k, { workers: p.workers.length, idle: p.idle.length, queue: p.queue.length }]));
+  }
+
+  async cleanup() {
+    const destroys = Object.values(this.pools).map(p => p.destroy());
+    await Promise.all(destroys);
+    console.log('\u2705 Worker Manager pools destroyed');
+  }
+}
+
+module.exports = new WorkerManager();
