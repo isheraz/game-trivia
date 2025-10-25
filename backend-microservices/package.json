@@ -1,0 +1,23 @@
+{
+  "name": "backend-microservices",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev:functions": "echo 'Use supabase functions serve'",
+    "lint": "eslint . --ext .ts",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.12",
+    "typescript": "^5.6.3",
+    "vitest": "^1.6.0",
+    "eslint": "^9.10.0",
+    "zod": "^3.23.8",
+    "hono": "^4.4.10",
+    "jose": "^5.9.3"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.4",
+    "undici": "^6.19.8"
+  }
+}
