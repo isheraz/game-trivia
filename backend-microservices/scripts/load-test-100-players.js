@@ -6,13 +6,42 @@
 
 import { execSync } from 'child_process'
 
-const SUPABASE_URL = process.env.SUPABASE_URL || 'http://127.0.0.1:54321'
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || 'sb_publishable_ACJWlzQHlZjBrEguHvfOxg_3BJgxAaH'
-const DB_URL = 'postgresql://postgres:postgres@127.0.0.1:54322/postgres'
-const WHATSAPP_GROUP_ID = process.env.WHATSAPP_GROUP_ID || '120363380598109107@g.us' // Replace with your group ID
+const SUPABASE_URL =  'https://lkxxhbixhazpcfnvuavm.supabase.co'
+const SUPABASE_ANON_KEY =  'sb_publishable_KfpSYn3BZhkhNngHhXcpOg_ymXKciLy'
+const DB_URL = 'postgresql://postgres:I1Q3sLTNAjlvqbtU@db.lkxxhbixhazpcfnvuavm.supabase.co:5432/postgres'
+// const SUPABASE_URL = process.env.SUPABASE_URL || 'http://127.0.0.1:54321'
+// const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || 'sb_publishable_KfpSYn3BZhkhNngHhXcpOg_ymXKciLy' ||'sb_publishable_ACJWlzQHlZjBrEguHvfOxg_3BJgxAaH'
+// const DB_URL = 'postgresql://postgres:postgres@127.0.0.1:54322/postgres'
 
 const NUM_PLAYERS = 100
-const BASE_PHONE = 92300000000 // Will generate 92300000001 to 92300000100
+const BASE_PHONE = 92300000000 // Will generate 92300000001 to 92300000100 for synthetic players
+const REAL_NUMBERS = (process.env.REAL_WHATSAPP_NUMBERS || '')
+  .split(',')
+  .map(s => s.trim())
+  .filter(s => s.length > 0)
+
+function buildPlayers() {
+  const players = []
+  const seen = new Set()
+  // Add allowlisted real numbers first
+  for (const num of REAL_NUMBERS) {
+    if (!seen.has(num)) {
+      players.push(num)
+      seen.add(num)
+      if (players.length === NUM_PLAYERS) return players
+    }
+  }
+  // Fill the rest with synthetic numbers
+  let i = 1
+  while (players.length < NUM_PLAYERS) {
+    const phone = String(BASE_PHONE + i)
+    i++
+    if (seen.has(phone)) continue
+    players.push(phone)
+    seen.add(phone)
+  }
+  return players
+}
 
 // Questions with varying difficulty
 const QUESTIONS = [
@@ -75,13 +104,13 @@ async function main() {
   await execSQL(`UPDATE games SET status = 'pre_game' WHERE id = '${gameId}';`)
   console.log('✅ Registration opened\n')
 
-  // Step 4: Register 100 players concurrently
-  console.log(`👥 Step 4: Registering ${NUM_PLAYERS} players...`)
+  // Step 4: Register players (real numbers first if provided)
+  const players = buildPlayers()
+  console.log(`👥 Step 4: Registering ${players.length} players...`)
   const startReg = Date.now()
   
   const registrations = []
-  for (let i = 1; i <= NUM_PLAYERS; i++) {
-    const phone = `${BASE_PHONE + i}`
+  for (const phone of players) {
     registrations.push(
       apiCall('registration', {
         method: 'POST',
@@ -96,18 +125,8 @@ async function main() {
   
   console.log(`✅ Registered ${regSuccess}/${NUM_PLAYERS} players in ${regTime}ms\n`)
 
-  // Step 5: Queue group notification for game start
-  console.log('📢 Step 5: Queuing group announcement...')
-  await execSQL(`
-    INSERT INTO notifications (to_number, message, status)
-    VALUES ('${WHATSAPP_GROUP_ID}', 
-            '🎮 GAME STARTING NOW! 🎮\n\n${NUM_PLAYERS} players registered!\n\nFirst question coming up...', 
-            'queued');
-  `)
-  console.log('✅ Group notification queued\n')
-
-  // Step 6: Start game
-  console.log('🎬 Step 6: Starting game...')
+  // Step 5: Start game
+  console.log('🎬 Step 5: Starting game...')
   await execSQL(`
     UPDATE games SET status = 'in_progress', started_at = now() WHERE id = '${gameId}';
     UPDATE game_players SET status = 'active' WHERE game_id = '${gameId}' AND status = 'registered';
@@ -123,8 +142,7 @@ async function main() {
     const answers = []
     
     // Generate answer distribution: 70% correct, 30% wrong
-    for (let i = 1; i <= NUM_PLAYERS; i++) {
-      const phone = `${BASE_PHONE + i}`
+    for (const phone of players) {
       
       // Check if player is still active
       const isActive = await execSQL(`
@@ -163,19 +181,11 @@ async function main() {
     console.log(`⏱️  Processed ${answerResults.length} answers in ${answerTime}ms`)
     console.log(`✅ Correct: ${correct} | ❌ Eliminated: ${eliminated} | 🏆 Winners: ${winners} | ⚠️  Errors: ${errors}`)
     
-    // Queue group update
+    // Stop if game finishes
     const remaining = await execSQL(`
       SELECT count(*) FROM game_players 
       WHERE game_id = '${gameId}' AND status = 'active';
     `)
-    
-    await execSQL(`
-      INSERT INTO notifications (to_number, message, status)
-      VALUES ('${WHATSAPP_GROUP_ID}', 
-              'Q${qNum} Results:\n✅ Correct: ${correct}\n❌ Eliminated: ${eliminated}\n👥 Remaining: ${remaining}', 
-              'queued');
-    `)
-    
     if (parseInt(remaining) === 0 || winners > 0) {
       console.log('\n🎊 Game finished!')
       break
@@ -195,7 +205,6 @@ async function main() {
       (SELECT count(*) FROM game_players WHERE game_id = g.id) as total_players,
       (SELECT count(*) FROM game_players WHERE game_id = g.id AND status = 'active') as active_players,
       (SELECT count(*) FROM game_players WHERE game_id = g.id AND status = 'eliminated') as eliminated_players,
-      (SELECT count(*) FROM notifications WHERE message LIKE '%${WHATSAPP_GROUP_ID}%') as group_notifications,
       (SELECT count(*) FROM notifications) as total_notifications
     FROM games g 
     WHERE g.id = '${gameId}';

@@ -9,7 +9,7 @@ echo "======================================"
 echo ""
 
 SUPABASE_URL="${SUPABASE_URL:-http://127.0.0.1:54321}"
-TEST_PHONE="${TEST_PHONE:-923196612416}"
+TEST_PHONE="${TEST_PHONE:-923124501070}"
 # Supabase API keys (defaults to local dev keys printed by `supabase start`)
 SUPABASE_ANON_KEY="${SUPABASE_ANON_KEY:-sb_publishable_ACJWlzQHlZjBrEguHvfOxg_3BJgxAaH}"
 SUPABASE_SERVICE_ROLE_KEY="${SUPABASE_SERVICE_ROLE_KEY:-sb_secret_N7UND0UgjKTVK-Uodkm0Hg_xSvEMPvz}"

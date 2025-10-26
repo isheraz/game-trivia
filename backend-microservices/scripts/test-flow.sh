@@ -10,7 +10,7 @@ echo ""
 # Configuration
 SUPABASE_URL="${SUPABASE_URL:-http://localhost:54321}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@qrush.com}"
-TEST_PHONE="${TEST_PHONE:-923196612416}"
+TEST_PHONE="${TEST_PHONE:-923124501070}"
 DEV_BYPASS="${ADMIN_DEV_PASSWORD:-dev123}"
 
 echo "📍 Using Supabase URL: $SUPABASE_URL"

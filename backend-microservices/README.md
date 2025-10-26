@@ -1,3 +1,4 @@
+
 # QRush Trivia - Supabase Microservices Backend
 
 Modern, scalable trivia game backend built with Supabase Edge Functions, designed for 100+ concurrent players per game with WhatsApp integration.
@@ -339,7 +340,23 @@ Processes queued notifications in batches:
 
 **Schedule:** Run every 1-2 minutes via Supabase cron
 
-## 🗄️ Database Schema
+## � WhatsApp delivery allowlist (mocking)
+
+To avoid sending messages to all simulated users during load tests, you can restrict real WhatsApp sends to a small allowlist and mock the rest.
+
+- Set `REAL_WHATSAPP_NUMBERS` in your `.env` (comma-separated, no spaces):
+
+  ```bash
+  REAL_WHATSAPP_NUMBERS=923111111111,923222222222,923333333333
+  ```
+
+- Behavior:
+  - If the recipient is in the allowlist, the dispatcher calls the WhatsApp Graph API and stores the `whatsapp_message_id` in the notification payload.
+  - If the recipient is NOT in the allowlist, the dispatcher marks the notification as `sent` and adds `mocked: true` to the payload. No external call is made.
+
+This lets you run large simulations safely while only sending real messages to a handful of verified numbers.
+
+## �🗄️ Database Schema
 
 ### Core Tables
 

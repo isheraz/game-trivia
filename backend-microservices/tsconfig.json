@@ -10,7 +10,8 @@
     "baseUrl": ".",
     "paths": {
       "@lib/*": ["supabase/functions/_lib/*"]
-    }
+    },
+    "allowImportingTsExtensions": true
   },
   "include": [
     "supabase/functions/**/*.ts"
